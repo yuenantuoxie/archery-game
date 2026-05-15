@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>射箭小游戏</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #5a7a3a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    touch-action: none;
+    font-family: system-ui, sans-serif;
+  }
+  canvas { display: block; border-radius: 8px; }
+  #score {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #fff;
+    font-size: 32px;
+    font-weight: bold;
+    z-index: 10;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  }
+  #speed-row {
+    position: fixed;
+    bottom: 30px;
+    left: 16px;
+    display: flex;
+    gap: 8px;
+    z-index: 10;
+  }
+  #speed-row button {
+    padding: 4px 16px;
+    border: 1px solid rgba(255,255,255,0.5);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.15);
+    color: rgba(255,255,255,0.8);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #speed-row button.on {
+    background: rgba(255,255,255,0.35);
+    border-color: #f39c12;
+    color: #f39c12;
+    font-weight: bold;
+  }
+  #scene-row {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    display: flex;
+    gap: 6px;
+    z-index: 10;
+  }
+  #scene-row button {
+    padding: 3px 12px;
+    border: 1px solid rgba(255,255,255,0.4);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.1);
+    color: rgba(255,255,255,0.7);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  #scene-row button.on {
+    background: rgba(255,255,255,0.3);
+    border-color: #f39c12;
+    color: #f39c12;
+    font-weight: bold;
+  }
+  #hint {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.5);
+    font-size: 13px;
+    z-index: 10;
+  }
+</style>
+</head>
+<body>
+<div id="score">🎯 0</div>
+<div id="scene-row">
+  <button class="on" data-scene="us">🇺🇸 美</button>
+</div>
+<div id="speed-row">
+  <button data-s="low">低</button>
+  <button class="on" data-s="mid">中</button>
+  <button data-s="high">高</button>
+</div>
+<div id="hint">按住弓弦向下拉，松手射箭</div>
+<canvas id="c"></canvas>
+
+<script>
+var canvas = document.getElementById('c');
+var ctx = canvas.getContext('2d');
+var W = 500, H = 700;
+
+function fit() {
+  W = Math.min(window.innerWidth - 16, 500);
+  H = Math.min(window.innerHeight - 16, 750);
+  canvas.width = W;
+  canvas.height = H;
+}
+fit();
+window.addEventListener('resize', fit);
+
+// ---- 常量 ----
+var bx = W * 0.5;      // 弓把 X
+var by = H * 0.78;     // 弓把 Y
+var bw = W * 0.3;      // 弓臂半宽
+
+var speed = 'mid';
+var spd = { low: 0.2, mid: 0.5, high: 1.0 };
+var scene = 'us';
+// 场景背景图片（高清照片）
+var bgImages = { us: null };
+var bgLoaded = { us: false };
+
+(function loadBgImages() {
+  var urlList = {
+    us: ['https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=600&h=900&fit=crop']
+  };
+  for (var key in urlList) {
+    (function(k, urls) {
+      var idx = 0;
+      function tryNext() {
+        if (idx >= urls.length) { bgLoaded[k] = false; return; }
+        var img = new Image();
+        img.onload = function() { bgImages[k] = img; bgLoaded[k] = true; };
+        img.onerror = function() { idx++; tryNext(); };
+        img.src = urls[idx];
+        idx++;
+      }
+      tryNext();
+    })(key, urlList[key]);
+  }
+})();
+
+// ---- 箭 ----
+function makeArrow(x, y, vx, vy) {
+  return { x: x, y: y, vx: vx, vy: vy, alive: true, hit: false };
+}
+
+function updateArrow(a) {
+  a.vy += 0.25;
+  a.x += a.vx;
+  a.y += a.vy;
+  if (a.y > H + 60 || a.x < -60 || a.x > W + 60) a.alive = false;
+}
+
+function drawArrow(a) {
+  var ang = Math.atan2(a.vy, a.vx);
+  ctx.save();
+  ctx.translate(a.x, a.y);
+  ctx.rotate(ang);
+  ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-26,0); ctx.lineTo(18,0); ctx.stroke();
+  ctx.fillStyle = '#ccc';
+  ctx.beginPath(); ctx.moveTo(18,0); ctx.lineTo(10,-5); ctx.lineTo(10,5); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.moveTo(-26,0); ctx.lineTo(-20,-5); ctx.lineTo(-16,0); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-26,0); ctx.lineTo(-20,5); ctx.lineTo(-16,0); ctx.fill();
+  ctx.restore();
+}
+
+// ---- 气球 ----
+function makeBalloon() {
+  var r = 18 + Math.random() * 16;
+  return {
+    x: W * 0.15 + Math.random() * W * 0.7,
+    y: H * 0.06 + Math.random() * H * 0.38,
+    r: r,
+    vx: (Math.random() - 0.5) * spd[speed],
+    vy: (Math.random() - 0.5) * spd[speed] * 0.6,
+    color: ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#3498db','#9b59b6'][0|Math.random()*6],
+    alive: true,
+    slen: 30 + Math.random() * 25
+  };
+}
+
+function updateBalloon(b) {
+  b.x += b.vx; b.y += b.vy;
+  if (b.x - b.r < 6) { b.x = 6 + b.r; b.vx *= -1; }
+  if (b.x + b.r > W - 6) { b.x = W - 6 - b.r; b.vx *= -1; }
+  if (b.y - b.r - b.slen < 4) { b.y = 4 + b.r + b.slen; b.vy *= -1; }
+  if (b.y + b.r > H * 0.55) { b.y = H * 0.55 - b.r; b.vy *= -1; }
+}
+
+function drawBalloon(b) {
+  // 线
+  ctx.strokeStyle = '#bbb'; ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(b.x, b.y + b.r);
+  ctx.quadraticCurveTo(b.x + 4, b.y + b.r + b.slen*0.6, b.x - 2, b.y + b.r + b.slen);
+  ctx.stroke();
+  // 球体
+  ctx.fillStyle = b.color;
+  ctx.beginPath(); ctx.ellipse(b.x, b.y, b.r, b.r*1.15, 0, 0, Math.PI*2); ctx.fill();
+  // 高光
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.beginPath(); ctx.ellipse(b.x-b.r*0.3, b.y-b.r*0.35, b.r*0.28, b.r*0.22, -0.3, 0, Math.PI*2); ctx.fill();
+  // 扎口
+  ctx.fillStyle = '#555';
+  ctx.beginPath(); ctx.moveTo(b.x-2, b.y+b.r); ctx.lineTo(b.x+2, b.y+b.r); ctx.lineTo(b.x, b.y+b.r+5); ctx.fill();
+}
+
+function hitTest(b, ax, ay) {
+  var dx = ax - b.x, dy = ay - b.y;
+  return Math.sqrt(dx*dx + dy*dy/1.15/1.15) < b.r + 5;
+}
+
+// ---- 粒子 ----
+function makeParticle(x, y, c) {
+  var a = Math.random()*Math.PI*2, s = 2+Math.random()*5;
+  return { x:x, y:y, vx:Math.cos(a)*s, vy:Math.sin(a)*s, life:1, color:c, r:2+Math.random()*3 };
+}
+function updateParticle(p) { p.x+=p.vx; p.y+=p.vy; p.vy+=0.08; p.life-=0.025; }
+function drawParticle(p) {
+  ctx.globalAlpha = p.life;
+  ctx.fillStyle = p.color;
+  ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+// ---- 浮动文字 ----
+function makeFloat(x, y, t, c) { return { x:x, y:y, text:t, color:c, life:1 }; }
+function updateFloat(f) { f.y -= 1; f.life -= 0.014; }
+function drawFloat(f) {
+  ctx.globalAlpha = f.life;
+  ctx.fillStyle = f.color;
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 6;
+  ctx.fillText(f.text, f.x, f.y);
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+}
+
+// ---- 状态 ----
+var arrows = [];
+var balloon = makeBalloon();
+var particles = [];
+var floats = [];
+var score = 0, combo = 0, cdt = 0;
+var down = false, px = 0, py = 0;
+var power = 0, aim = -Math.PI/2;
+var maxP = 13;
+
+function spawnParts(x, y, c) {
+  for (var i = 0; i < 20; i++) particles.push(makeParticle(x, y, c));
+}
+
+// ---- 输入 ----
+function getPos(e) { return { x: e.offsetX, y: e.offsetY }; }
+function getTouch(t) { var r = canvas.getBoundingClientRect(); return { x: t.clientX - r.left, y: t.clientY - r.top }; }
+
+canvas.addEventListener('mousedown', function(e) {
+  down = true; var p = getPos(e); px = p.x; py = p.y;
+});
+canvas.addEventListener('mousemove', function(e) {
+  if (!down) return; var p = getPos(e); px = p.x; py = p.y;
+  var dx = px - bx, dy = py - by;
+  var dist = Math.sqrt(dx*dx + dy*dy);
+  power = Math.min(maxP, dist / 6);
+  var off = Math.atan2(dx, Math.max(1, Math.abs(dy)));
+  aim = -Math.PI/2 + Math.max(-Math.PI/4, Math.min(Math.PI/4, off));
+});
+canvas.addEventListener('mouseup', function() { if (down) { down = false; fire(); } });
+canvas.addEventListener('mouseleave', function() { if (down) { down = false; fire(); } });
+
+canvas.addEventListener('touchstart', function(e) {
+  e.preventDefault();
+  down = true; var p = getTouch(e.touches[0]); px = p.x; py = p.y;
+}, {passive: false});
+canvas.addEventListener('touchmove', function(e) {
+  e.preventDefault();
+  if (!down) return; var p = getTouch(e.touches[0]); px = p.x; py = p.y;
+  var dx = px - bx, dy = py - by;
+  var dist = Math.sqrt(dx*dx + dy*dy);
+  power = Math.min(maxP, dist / 6);
+  var off = Math.atan2(dx, Math.max(1, Math.abs(dy)));
+  aim = -Math.PI/2 + Math.max(-Math.PI/4, Math.min(Math.PI/4, off));
+}, {passive: false});
+canvas.addEventListener('touchend', function() { if (down) { down = false; fire(); } });
+
+// 速度按钮
+var spBtns = document.querySelectorAll('#speed-row button');
+for (var i = 0; i < spBtns.length; i++) {
+  spBtns[i].addEventListener('click', function(e) {
+    e.stopPropagation();
+    for (var j = 0; j < spBtns.length; j++) spBtns[j].classList.remove('on');
+    this.classList.add('on');
+    speed = this.dataset.s;
+  });
+}
+
+// 场景按钮
+var scBtns = document.querySelectorAll('#scene-row button');
+for (var i = 0; i < scBtns.length; i++) {
+  scBtns[i].addEventListener('click', function(e) {
+    e.stopPropagation();
+    for (var j = 0; j < scBtns.length; j++) scBtns[j].classList.remove('on');
+    this.classList.add('on');
+    scene = this.dataset.scene;
+  });
+}
+
+function fire() {
+  if (power < 0.8) return;
+  var sp = power * 2.0;
+  arrows.push(makeArrow(bx, by - 6, Math.cos(aim) * sp, Math.sin(aim) * sp));
+  power = 0;
+}
+
+// ---- 更新 ----
+function update() {
+  for (var i = 0; i < arrows.length; i++) {
+    var a = arrows[i];
+    updateArrow(a);
+    if (a.alive && balloon.alive && hitTest(balloon, a.x, a.y)) {
+      a.alive = false; a.hit = true;
+      balloon.alive = false;
+      spawnParts(balloon.x, balloon.y, balloon.color);
+      floats.push(makeFloat(balloon.x, balloon.y, 'YN！真厉害！', '#ffd700'));
+      combo++; cdt = 90;
+      var bonus = combo >= 5 ? 3 : combo >= 3 ? 2 : 1;
+      score += bonus;
+      document.getElementById('score').textContent = '🎯 ' + score;
+    }
+  }
+  for (var i = 0; i < arrows.length; i++) {
+    if (!arrows[i].alive && !arrows[i].hit) {
+      floats.push(makeFloat(W*0.5, H*0.45, '加油！再来一次', '#fff'));
+      arrows[i].hit = true;
+    }
+  }
+  arrows = arrows.filter(function(a) { return a.alive; });
+
+  updateBalloon(balloon);
+  if (!balloon.alive) {
+    balloon = makeBalloon();
+    // 新气球也应用当前速度
+    balloon.vx = (Math.random() - 0.5) * spd[speed];
+    balloon.vy = (Math.random() - 0.5) * spd[speed] * 0.6;
+  }
+
+  if (cdt > 0) { cdt--; if (cdt === 0) combo = 0; }
+
+  for (var i = 0; i < particles.length; i++) updateParticle(particles[i]);
+  particles = particles.filter(function(p) { return p.life > 0; });
+  for (var i = 0; i < floats.length; i++) updateFloat(floats[i]);
+  floats = floats.filter(function(f) { return f.life > 0; });
+}
+
+// ---- 绘制 ----
+function drawSceneUS() {
+  if (bgLoaded.us && bgImages.us) {
+    ctx.drawImage(bgImages.us, 0, 0, W, H);
+    ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fillRect(W*0.08, H*0.88, W*0.84, 4);
+    return;
+  }
+  // 美国西部 — 广阔天空
+  var g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#5b8db8');
+  g.addColorStop(0.5, '#a3c9e8');
+  g.addColorStop(0.75, '#d4c8a0');
+  g.addColorStop(1, '#b8955a');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // 落基山脉
+  ctx.fillStyle = '#8a9aa8';
+  ctx.beginPath();
+  ctx.moveTo(0, H*0.45);
+  ctx.quadraticCurveTo(W*0.2, H*0.22, W*0.35, H*0.32);
+  ctx.quadraticCurveTo(W*0.5, H*0.18, W*0.65, H*0.3);
+  ctx.quadraticCurveTo(W*0.8, H*0.2, W, H*0.38);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+
+  // 雪顶
+  ctx.fillStyle = '#e8eef2';
+  ctx.beginPath();
+  ctx.moveTo(W*0.44, H*0.26);
+  ctx.lineTo(W*0.5, H*0.18);
+  ctx.lineTo(W*0.56, H*0.28);
+  ctx.fill();
+
+  // 远景松林
+  ctx.fillStyle = '#3d5e38';
+  for (var i=0; i<8; i++) {
+    var tx = W*0.1 + i*W*0.1;
+    ctx.beginPath();
+    ctx.moveTo(tx, H*0.42);
+    ctx.lineTo(tx-8, H*0.56);
+    ctx.lineTo(tx+8, H*0.56);
+    ctx.fill();
+  }
+
+  // 木谷仓
+  var bx2 = W*0.52, by2 = H*0.26, bw2 = W*0.22, bh2 = H*0.1;
+  ctx.fillStyle = '#8b3a2a'; ctx.fillRect(bx2, by2, bw2, bh2);
+  ctx.fillStyle = '#6e2e20';
+  ctx.beginPath();
+  ctx.moveTo(bx2-4, by2); ctx.lineTo(bx2+bw2/2, by2-bh2*0.5); ctx.lineTo(bx2+bw2+4, by2);
+  ctx.fill();
+  ctx.fillStyle = '#d4c9a0'; ctx.fillRect(bx2+bw2*0.1, by2+bh2*0.4, bw2*0.25, bh2*0.5);
+  ctx.fillStyle = '#fff'; ctx.fillRect(bx2+bw2*0.65, by2+bh2*0.35, bw2*0.2, bh2*0.4);
+
+  // 围栏
+  ctx.strokeStyle = '#8b7355'; ctx.lineWidth = 1.2;
+  for (var f=0; f<3; f++) {
+    ctx.beginPath();
+    ctx.moveTo(W*0.1+f*W*0.3, H*0.62);
+    ctx.lineTo(W*0.1+f*W*0.3+W*0.22, H*0.62);
+    ctx.stroke();
+    ctx.fillStyle = '#9b8365';
+    ctx.fillRect(W*0.1+f*W*0.3-2, H*0.59, 4, 8);
+    ctx.fillRect(W*0.1+f*W*0.3+W*0.22-2, H*0.59, 4, 8);
+  }
+
+  // 金黄的草原
+  var gl2 = ctx.createLinearGradient(0, H*0.6, 0, H);
+  gl2.addColorStop(0, '#c8a858'); gl2.addColorStop(1, '#a08038');
+  ctx.fillStyle = gl2; ctx.fillRect(0, H*0.6, W, H*0.4);
+
+  // 草丛
+  ctx.strokeStyle = '#b89840'; ctx.lineWidth = 0.8;
+  for (var i=0; i<W; i+=10) {
+    var gh2 = 3+Math.random()*7;
+    ctx.beginPath(); ctx.moveTo(i, H*0.62); ctx.lineTo(i+1, H*0.62-gh2); ctx.stroke();
+  }
+
+  // 射箭线
+  ctx.fillStyle = '#d0c8b8'; ctx.fillRect(W*0.08, H*0.88, W*0.84, 4);
+}
+
+function drawScene() {
+  drawSceneUS();
+}
+
+function drawBow() {
+  var lx = bx - bw, ly = by - 12;
+  var rx = bx + bw, ry = by - 12;
+
+  // 弓臂
+  ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(lx, ly); ctx.quadraticCurveTo(bx, by + 16, rx, ry); ctx.stroke();
+  ctx.strokeStyle = '#e6e6e6'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(lx, ly); ctx.quadraticCurveTo(bx, by + 13, rx, ry); ctx.stroke();
+
+  // 弓梢
+  ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(lx, ly); ctx.quadraticCurveTo(lx-6, ly-6, lx+2, ly+5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(rx, ry); ctx.quadraticCurveTo(rx+6, ry-6, rx-2, ry+5); ctx.stroke();
+
+  // 弓把
+  var gr = ctx.createLinearGradient(bx-8, 0, bx+8, 0);
+  gr.addColorStop(0, '#5d6d7e'); gr.addColorStop(0.5, '#d5d8dc'); gr.addColorStop(1, '#5d6d7e');
+  ctx.fillStyle = gr;
+  ctx.beginPath();
+  ctx.moveTo(bx-7, by-12); ctx.lineTo(bx+7, by-12);
+  ctx.lineTo(bx+7, by+12); ctx.lineTo(bx-7, by+12);
+  ctx.fill();
+  ctx.strokeStyle = '#3a4a5a'; ctx.lineWidth = 1; ctx.stroke();
+
+  // 弦
+  if (down && power >= 0.8) {
+    var sx = bx + (px - bx) * 0.4;
+    var sy = by + (py - by) * 0.6;
+    ctx.strokeStyle = '#eee'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(sx, sy); ctx.lineTo(rx, ry); ctx.stroke();
+
+    // 搭箭点
+    ctx.fillStyle = '#d4a017'; ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI*2); ctx.fill();
+
+    // 搭在弓上的箭
+    var tipX = sx + Math.cos(aim) * 55;
+    var tipY = sy + Math.sin(aim) * 55;
+    var tailX = sx - Math.cos(aim) * 5;
+    var tailY = sy - Math.sin(aim) * 5;
+    ctx.save();
+    ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 2.3;
+    ctx.beginPath(); ctx.moveTo(tailX, tailY); ctx.lineTo(tipX, tipY); ctx.stroke();
+    ctx.save(); ctx.translate(tipX, tipY); ctx.rotate(aim);
+    ctx.fillStyle = '#ccc';
+    ctx.beginPath(); ctx.moveTo(6,0); ctx.lineTo(0,-4); ctx.lineTo(0,4); ctx.fill();
+    ctx.restore();
+    ctx.save(); ctx.translate(tailX, tailY); ctx.rotate(aim);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-6,-4); ctx.lineTo(-1,0); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-6,4); ctx.lineTo(-1,0); ctx.fill();
+    ctx.restore();
+    ctx.restore();
+  } else {
+    ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(bx, by+6); ctx.lineTo(rx, ry); ctx.stroke();
+  }
+
+  // 准星
+  ctx.strokeStyle = '#777'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(bx, by-6); ctx.lineTo(bx, by-22); ctx.stroke();
+  ctx.strokeStyle = '#f39c12'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(bx, by-26, 4, 0, Math.PI*2); ctx.stroke();
+  ctx.fillStyle = '#f39c12'; ctx.beginPath(); ctx.arc(bx, by-26, 1.2, 0, Math.PI*2); ctx.fill();
+}
+
+function drawHands() {
+  // 左手握弓
+  ctx.fillStyle = '#e8c9a0';
+  ctx.beginPath(); ctx.arc(bx, by+9, 10, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#c4956a'; ctx.lineWidth = 1.2; ctx.stroke();
+
+  // 右手拉弦
+  if (down && power >= 0.8) {
+    var sx = bx + (px - bx) * 0.4;
+    var sy = by + (py - by) * 0.6;
+    ctx.fillStyle = '#e8c9a0';
+    ctx.beginPath(); ctx.arc(sx, sy+2, 6, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#c4956a'; ctx.lineWidth = 1; ctx.stroke();
+  }
+}
+
+function drawAimLine() {
+  if (!down || power < 0.8) return;
+  ctx.setLineDash([5, 4]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(bx, by-6);
+  for (var i = 1; i <= 18; i++) {
+    var t = i * 3.5;
+    var ax = bx + Math.cos(aim) * power * 2.0 * t;
+    var ay = by - 6 + Math.sin(aim) * power * 2.0 * t + 0.25 * t*t/2;
+    if (ay < -20 || ax < -20 || ax > W+20) break;
+    ctx.lineTo(ax, ay);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 力道条
+  var bw2 = 50, bh2 = 4;
+  var bX = bx - bw2/2, bY = by + bw + 20;
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.fillRect(bX-1, bY-1, bw2+2, bh2+2);
+  ctx.fillStyle = '#f39c12';
+  ctx.fillRect(bX, bY, bw2 * power/maxP, bh2);
+}
+
+function draw() {
+  drawScene();
+  drawAimLine();
+  drawBalloon(balloon);
+  for (var i = 0; i < arrows.length; i++) drawArrow(arrows[i]);
+  for (var i = 0; i < particles.length; i++) drawParticle(particles[i]);
+  for (var i = 0; i < floats.length; i++) drawFloat(floats[i]);
+  drawBow();
+  drawHands();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
